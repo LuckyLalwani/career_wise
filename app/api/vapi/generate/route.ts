@@ -1,51 +1,117 @@
-import { generateText } from "ai";
-import { google } from "@ai-sdk/google";
+"use server";
+
+import { generateObject } from "ai";
+import { openrouter } from "@openrouter/ai-sdk-provider";
+import { z } from "zod";
 
 import { db } from "@/firebase/admin";
 import { getRandomInterviewCover } from "@/lib/utils";
 
-export async function POST(request: Request) {
-  const { type, role, level, techstack, amount, userid } = await request.json();
+// ==============================
+// ✅ SCHEMA (STRICT STRUCTURE)
+// ==============================
+const questionSchema = z.object({
+  questions: z.array(z.string().min(5)),
+});
 
+// ==============================
+// 🚀 POST: CREATE INTERVIEW
+// ==============================
+export async function POST(request: Request) {
   try {
-    const { text: questions } = await generateText({
-      model: google("gemini-2.0-flash-001"),
-      prompt: `Prepare questions for a job interview.
-        The job role is ${role}.
-        The job experience level is ${level}.
-        The tech stack used in the job is: ${techstack}.
-        The focus between behavioural and technical questions should lean towards: ${type}.
-        The amount of questions required is: ${amount}.
-        Please return only the questions, without any additional text.
-        The questions are going to be read by a voice assistant so do not use "/" or "*" or any other special characters which might break the voice assistant.
-        Return the questions formatted like this:
-        ["Question 1", "Question 2", "Question 3"]
-        
-        Thank you! <3
-    `,
+    const body = await request.json();
+
+    console.log("📥 Incoming body:", body);
+
+    const { type, role, level, techstack, amount, userid } = body;
+
+    // ==============================
+    // ✅ VALIDATION (VERY IMPORTANT)
+    // ==============================
+    if (!role || !level || !techstack || !amount || !userid) {
+      throw new Error("Missing required fields");
+    }
+
+    // ==============================
+    // 🚀 AI GENERATION (OpenRouter)
+    // ==============================
+    const { object } = await generateObject({
+      model: openrouter("openai/gpt-4o-mini"),
+
+      schema: questionSchema,
+
+      system:
+        "You are an expert interviewer generating high-quality, voice-friendly interview questions.",
+
+      prompt: `
+Generate interview questions based on:
+
+Role: ${role}
+Experience Level: ${level}
+Tech Stack: ${techstack}
+Focus: ${type}
+Number of Questions: ${amount}
+
+STRICT RULES:
+- Output ONLY valid JSON
+- No explanations
+- No markdown
+- No special characters like / * etc.
+- Keep questions clear and concise
+- Make them realistic interview questions
+`,
+      temperature: 0.7,
     });
 
+    // ==============================
+    // 📦 PREPARE DATA
+    // ==============================
     const interview = {
-      role: role,
-      type: type,
-      level: level,
-      techstack: techstack.split(","),
-      questions: JSON.parse(questions),
-      userId: userid,
+      role,
+      type,
+      level,
+      techstack: techstack.split(",").map((t: string) => t.trim()),
+      questions: object.questions,
+      userid,
       finalized: true,
       coverImage: getRandomInterviewCover(),
       createdAt: new Date().toISOString(),
     };
 
+    console.log("📦 Saving interview:", interview);
+
+    // ==============================
+    // 💾 SAVE TO FIRESTORE
+    // ==============================
     await db.collection("interviews").add(interview);
 
-    return Response.json({ success: true }, { status: 200 });
-  } catch (error) {
-    console.error("Error:", error);
-    return Response.json({ success: false, error: error }, { status: 500 });
+    return Response.json(
+      { success: true, data: interview },
+      { status: 200 }
+    );
+  } catch (error: any) {
+    console.error("🔥 ERROR:", error.message);
+    console.error(error.stack);
+
+    return Response.json(
+      {
+        success: false,
+        error: error.message || "Something went wrong",
+      },
+      { status: 500 }
+    );
   }
 }
 
+// ==============================
+// ✅ GET: HEALTH CHECK
+// ==============================
 export async function GET() {
-  return Response.json({ success: true, data: "Thank you!" }, { status: 200 });
+  return Response.json(
+    {
+      success: true,
+      message: "Interview API is working 🚀",
+    },
+    { status: 200 }
+  );
 }
